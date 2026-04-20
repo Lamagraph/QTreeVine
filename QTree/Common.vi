@@ -1,0 +1,123 @@
+#[impl(Eq)]
+pub enum* TreeValue[T] {
+  Dummy(),
+  UserValue(T),
+}
+
+pub mod CommonInternal {
+  pub enum* BinSearchTree[T] {
+    Leaf(T),
+    Node(BinSearchTree[T], T, BinSearchTree[T] ),
+  }
+
+  const MAX: N64 = 9223372036854776000[N64];
+
+  pub const treeOfPowersOfTwo: BinSearchTree[N64] = BinSearchTree::Node(
+     BinSearchTree::Node(
+       BinSearchTree::Node(
+         BinSearchTree::Node(
+           BinSearchTree::Leaf(1[N64]),
+           2[N64],
+           BinSearchTree::Leaf(4[N64]),
+        ),
+         8[N64],
+         BinSearchTree::Node(
+           BinSearchTree::Leaf(16[N64]),
+           32[N64],
+           BinSearchTree::Leaf(64[N64]),
+        ),
+      ),
+       128[N64],
+       BinSearchTree::Node(
+         BinSearchTree::Node(
+           BinSearchTree::Leaf(256[N64]),
+           512[N64],
+           BinSearchTree::Leaf(1024[N64]),
+        ),
+         2048[N64],
+         BinSearchTree::Node(
+           BinSearchTree::Leaf(4096[N64]),
+           8192[N64],
+           BinSearchTree::Leaf(16384[N64]),
+        ),
+      ),
+    ),
+     32768[N64],
+     BinSearchTree::Node(
+       BinSearchTree::Node(
+         BinSearchTree::Node(
+           BinSearchTree::Leaf(65536[N64]),
+           131072[N64],
+           BinSearchTree::Leaf(262144[N64]),
+        ),
+         524288[N64],
+         BinSearchTree::Node(
+           BinSearchTree::Leaf(1048576[N64]),
+           2097152[N64],
+           BinSearchTree::Leaf(4194304[N64]),
+        ),
+      ),
+       8388608[N64],
+       BinSearchTree::Node(
+         BinSearchTree::Node(
+           BinSearchTree::Leaf(16777216[N64]),
+           33554432[N64],
+           BinSearchTree::Leaf(67108864[N64]),
+        ),
+         134217728[N64],
+         BinSearchTree::Node(
+           BinSearchTree::Leaf(268435456[N64]),
+           536870912[N64],
+           BinSearchTree::Leaf(1073741824[N64]),
+        ),
+      ),
+    ),
+  );
+
+  fn findInTree(x: N64, tree: BinSearchTree[N64], rightBound: N64) -> N64 {
+    match tree {
+      BinSearchTree::Node( left, value, right ) {
+        when {
+          x == value { value }
+          x < value { findInTree(x, left, value) }
+          _ { findInTree(x, right, rightBound) }
+        }
+      }
+      BinSearchTree::Leaf(v) {
+        if x <= v { v } else { rightBound }
+      }
+    }
+  }
+
+  pub fn getNearestUpperPowerOfTwo(x: N64) -> Result[N64, String] {
+    when {
+      x == MAX { Ok(MAX) }
+      x < MAX { Ok(findInTree(x, CommonInternal::treeOfPowersOfTwo, 9223372036854776000[N64])) }
+      _ { Err("Argument is too large. Must be not greater then {MAX}") }
+    }
+  }
+
+  pub fn run_tests(&io: &IO) {
+    test_power_of_two(1[N64], 1[N64], &io);
+    test_power_of_two(2[N64], 2[N64], &io);
+    test_power_of_two(3[N64], 4[N64], &io);
+    test_power_of_two(12[N64], 16[N64], &io);
+    test_power_of_two(1025[N64], 2048[N64], &io);
+    test_power_of_two(524290[N64], 1048576[N64], &io);
+    test_power_of_two(1048576[N64], 1048576[N64], &io);
+    test_power_of_two(4611686018427388001[N64], 9223372036854776000[N64], &io);
+  }
+
+  fn test_power_of_two(input: N64, expected: N64, &io: &IO) {
+    let result = getNearestUpperPowerOfTwo(input);
+    match result {
+      Ok(actual) {
+        if actual == expected { io.println("PASS"); }
+        else { io.println("FAIL: getNearestUpperPowerOfTwo({input}) = {actual}, expected {expected}"); }
+      }
+      Err(e) {
+        io.println("FAIL: getNearestUpperPowerOfTwo({input}) returned error: {e}");
+      }
+    }
+  }
+}

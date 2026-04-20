@@ -1,0 +1,172 @@
+
+use Matrix::SparseMatrix;
+use Vector::SparseVector;
+use Vector::map2;
+use Vector::fromCoordinateList;
+use Vector::CoordinateList;
+use LinearAlgebra::vxm;
+use Common::TreeValue;
+
+#[impl(Eq,Show)]
+pub enum* SSSPError {
+  NewFrontierCalculationProblem(),
+  FrontierCalculationProblem(),
+  VisitedCalculationProblem(),
+}
+
+pub fn sssp(graph: SparseMatrix[N64], startVertex: N64) -> Result[SparseVector[N64], SSSPError] {
+  let ncols = graph.1;
+
+  let frontier = fromCoordinateList(CoordinateList(ncols * 1[N64], [(startVertex, 0[N64])]));
+
+  let fn inner(frontier: SparseVector[N64], visited: SparseVector[N64], iter_num: N64) -> Result[
+    SparseVector[N64], SSSPError;
+  ] {
+    if frontier.1 > 0[N64] and iter_num < ncols {
+      let op_add = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+        match (x, y) {
+          (Option::Some(a), Option::Some(b)) {
+            if a < b {
+              Option::Some(a)
+            } else {
+              Option::Some(b)
+            }
+          }
+          (Option::Some(a), _) { Option::Some(a) }
+          (_, Option::Some(b)) { Option::Some(b) }
+          _ { Option::None() }
+        }
+      };
+
+      let op_mult = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+        match (x, y) {
+          (Option::Some(a), Option::Some(b)) { Option::Some(a + b) }
+          _ { Option::None() }
+        }
+      };
+
+      match vxm(op_add, op_mult, frontier, graph) {
+        Result::Err(_e) { Result::Err(SSSPError::NewFrontierCalculationProblem()) }
+        Result::Ok(new_frontier) {
+          let op_min = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+            match (x, y) {
+              (Option::Some(a), Option::Some(b)) {
+                if a < b {
+                  Option::Some(a)
+                } else {
+                  Option::None()
+                }
+              }
+              (Option::Some(a), _) { Option::Some(a) }
+              _ { Option::None() }
+            }
+          };
+
+          match map2(new_frontier, visited, op_min) {
+            Result::Err(_e) { Result::Err(SSSPError::FrontierCalculationProblem()) }
+            Result::Ok(frontier) {
+              let op_add_v = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+                match (x, y) {
+                  (Option::Some(a), Option::Some(b)) {
+                    if a < b {
+                      Option::Some(a)
+                    } else {
+                      Option::Some(b)
+                    }
+                  }
+                  (Option::Some(a), _) { Option::Some(a) }
+                  (_, Option::Some(b)) { Option::Some(b) }
+                  _ { Option::None() }
+                }
+              };
+
+              match map2(visited, frontier, op_add_v) {
+                Result::Err(_e) { Result::Err(SSSPError::VisitedCalculationProblem()) }
+                Result::Ok(visited) { inner(frontier, visited, iter_num + 1[N64]) }
+              }
+            }
+          }
+        }
+      }
+    } else {
+      Result::Ok(visited)
+    }
+  }
+
+  inner(frontier, frontier, 0[N64])
+}
+
+pub fn run_tests(&io: &IO) {
+  test_simple_sssp(&io);
+  test_sssp_with_recalculation(&io);
+}
+
+fn leaf_v[T](v: T) -> Matrix::QTree[Option[T]] {
+  Matrix::QTree::Leaf(TreeValue::UserValue(Option::Some(v)))
+}
+
+fn leaf_n[T]() -> Matrix::QTree[Option[T]] {
+  Matrix::QTree::Leaf(TreeValue::UserValue(Option::None()))
+}
+
+fn test_simple_sssp(&io: &IO) {
+  let qtree = Matrix::QTree::Node(
+    Matrix::QTree::Node(leaf_n(), leaf_v(1[N64]), leaf_v(3[N64]), leaf_n()),
+    Matrix::QTree::Node(leaf_v(1[N64]), leaf_n(), leaf_v(2[N64]), leaf_v(3[N64])),
+    leaf_n(),
+    Matrix::QTree::Node(leaf_n(), leaf_v(2[N64]), leaf_v(3[N64]), leaf_n()),
+  );
+  let store = Matrix::Storage(4[N64], qtree);
+  let graph = Matrix::SparseMatrix(4[N64], 4[N64], 9[N64], store);
+
+  let tree = Vector::BTree::Node(
+    Vector::BTree::Node(
+      Vector::BTree::Leaf(TreeValue::UserValue(Option::Some(0[N64]))),
+      Vector::BTree::Leaf(TreeValue::UserValue(Option::Some(1[N64]))),
+    ),
+    Vector::BTree::Node(
+      Vector::BTree::Leaf(TreeValue::UserValue(Option::Some(1[N64]))),
+      Vector::BTree::Leaf(TreeValue::UserValue(Option::Some(3[N64]))),
+    ),
+  );
+  let vstore = Vector::Storage(4[N64], tree);
+  let expected = Result::Ok(Vector::SparseVector(4[N64], 4[N64], vstore));
+
+  let actual = sssp(graph, 0[N64]);
+
+  if actual == expected {
+    io.println("PASS: test_simple_sssp");
+  } else {
+    io.println("FAIL: test_simple_sssp");
+  }
+}
+
+fn test_sssp_with_recalculation(&io: &IO) {
+  let clist = Matrix::CoordiInteList(
+    5[N64],
+    5[N64],
+    [
+      (0[N64], 1[N64], 1[N64]),
+      (1[N64], 2[N64], 1[N64]),
+      (2[N64], 3[N64], 1[N64]),
+      (2[N64], 4[N64], 4[N64]),
+      (3[N64], 4[N64], 2[N64]),
+      (0[N64], 3[N64], 6[N64]),
+    ],
+  );
+  let graph = Matrix::fromCoordiInteList(clist);
+
+  let clist = Vector::CoordinateList(
+    5[N64],
+    [(0[N64], 0[N64]), (1[N64], 1[N64]), (2[N64], 2[N64]), (3[N64], 3[N64]), (4[N64], 5[N64])],
+  );
+  let expected = Result::Ok(Vector::fromCoordinateList(clist));
+
+  let actual = sssp(graph, 0[N64]);
+
+  if actual == expected {
+    io.println("PASS: test_sssp_with_recalculation");
+  } else {
+    io.println("FAIL: test_sssp_with_recalculation");
+  }
+}

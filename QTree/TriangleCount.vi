@@ -1,0 +1,175 @@
+
+use Matrix::SparseMatrix;
+use Matrix::getLowerTriangle;
+use Matrix::transpose;
+use Matrix::mask;
+use Matrix::foldAssociative;
+use LinearAlgebra::mxm;
+
+#[impl(Eq,Show)]
+pub enum* TriangleCountError {
+  MXMError(LinearAlgebra::MXMError),
+  MaskingError(),
+}
+
+pub fn triangle_count(graph: SparseMatrix[N64]) -> Result[Option[N64], TriangleCountError] {
+  let graph_lt = getLowerTriangle(graph);
+
+  let op_add = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+    match (x, y) {
+      (Option::Some(a), Option::Some(b)) { Option::Some(a + b) }
+      (Option::Some(a), _) { Option::Some(a) }
+      (_, Option::Some(b)) { Option::Some(b) }
+      _ { Option::None() }
+    }
+  };
+
+  let op_mult = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+    match (x, y) {
+      (Option::Some(_a), Option::Some(_b)) { Option::Some(1[N64]) }
+      _ { Option::None() }
+    }
+  };
+
+  match mxm(op_add, op_mult, graph_lt, transpose(graph_lt)) {
+    Result::Err(_e) { Result::Err(TriangleCountError::MXMError(_e)) }
+    Result::Ok(c) {
+      match mask(
+        c,
+        graph_lt,
+        fn* (x: Option[N64]) -> Bool {
+          match x {
+            Option::Some(_) { true }
+            _ { false }
+          }
+        },
+      ) {
+        Result::Err(_e) { Result::Err(TriangleCountError::MaskingError()) }
+        Result::Ok(cm) {
+          let result = foldAssociative(
+            fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+              match (x, y) {
+                (Option::Some(a), Option::Some(b)) { Option::Some(a + b) }
+                (Option::Some(a), _) { Option::Some(a) }
+                (_, Option::Some(b)) { Option::Some(b) }
+                _ { Option::None() }
+              }
+            },
+            Option::None(),
+            cm,
+          );
+          Result::Ok(result)
+        }
+      }
+    }
+  }
+}
+
+pub fn run_tests(&io: &IO) {
+  test_triangle_count_7v(&io);
+  test_triangle_count_3v(&io);
+  test_triangle_count_5v(&io);
+}
+
+fn test_triangle_count_7v(&io: &IO) {
+  let clist = Matrix::CoordiInteList(
+    7[N64],
+    7[N64],
+    [
+      (1[N64], 0[N64], 1[N64]),
+      (3[N64], 0[N64], 1[N64]),
+      (3[N64], 1[N64], 1[N64]),
+      (3[N64], 2[N64], 1[N64]),
+      (4[N64], 1[N64], 1[N64]),
+      (5[N64], 2[N64], 1[N64]),
+      (5[N64], 3[N64], 1[N64]),
+      (5[N64], 4[N64], 1[N64]),
+      (6[N64], 1[N64], 1[N64]),
+      (6[N64], 2[N64], 1[N64]),
+      (6[N64], 3[N64], 1[N64]),
+      (6[N64], 4[N64], 1[N64]),
+      (0[N64], 1[N64], 1[N64]),
+      (0[N64], 3[N64], 1[N64]),
+      (1[N64], 3[N64], 1[N64]),
+      (2[N64], 3[N64], 1[N64]),
+      (1[N64], 4[N64], 1[N64]),
+      (2[N64], 5[N64], 1[N64]),
+      (3[N64], 5[N64], 1[N64]),
+      (4[N64], 5[N64], 1[N64]),
+      (1[N64], 6[N64], 1[N64]),
+      (2[N64], 6[N64], 1[N64]),
+      (3[N64], 6[N64], 1[N64]),
+      (4[N64], 6[N64], 1[N64]),
+    ],
+  );
+  let graph = Matrix::fromCoordiInteList(clist);
+
+  let expected = Option::Some(5[N64]);
+
+  let actual = triangle_count(graph);
+
+  if actual == Result::Ok(expected) {
+    io.println("PASS: test_triangle_count_7v");
+  } else {
+    io.println("FAIL: test_triangle_count_7v");
+  }
+}
+
+fn test_triangle_count_3v(&io: &IO) {
+  let clist = Matrix::CoordiInteList(
+    3[N64],
+    3[N64],
+    [
+      (1[N64], 0[N64], 1[N64]),
+      (0[N64], 1[N64], 1[N64]),
+      (1[N64], 2[N64], 1[N64]),
+      (2[N64], 1[N64], 1[N64]),
+      (2[N64], 0[N64], 1[N64]),
+      (0[N64], 2[N64], 1[N64]),
+    ],
+  );
+  let graph = Matrix::fromCoordiInteList(clist);
+
+  let expected = Option::Some(1[N64]);
+
+  let actual = triangle_count(graph);
+
+  if actual == Result::Ok(expected) {
+    io.println("PASS: test_triangle_count_3v");
+  } else {
+    io.println("FAIL: test_triangle_count_3v");
+  }
+}
+
+fn test_triangle_count_5v(&io: &IO) {
+  let clist = Matrix::CoordiInteList(
+    5[N64],
+    5[N64],
+    [
+      (1[N64], 0[N64], 1[N64]),
+      (0[N64], 1[N64], 1[N64]),
+      (1[N64], 2[N64], 1[N64]),
+      (2[N64], 1[N64], 1[N64]),
+      (2[N64], 0[N64], 1[N64]),
+      (0[N64], 2[N64], 1[N64]),
+      (1[N64], 4[N64], 1[N64]),
+      (4[N64], 1[N64], 1[N64]),
+      (4[N64], 3[N64], 1[N64]),
+      (3[N64], 4[N64], 1[N64]),
+      (3[N64], 1[N64], 1[N64]),
+      (1[N64], 3[N64], 1[N64]),
+    ],
+  );
+  let graph = Matrix::fromCoordiInteList(clist);
+
+  let expected = Option::Some(2[N64]);
+
+  let actual = triangle_count(graph);
+
+  if actual == Result::Ok(expected) {
+    io.println("PASS: test_triangle_count_5v");
+  } else {
+    io.println("Actual: {actual.show()}");
+    io.println("FAIL: test_triangle_count_5v");
+  }
+}

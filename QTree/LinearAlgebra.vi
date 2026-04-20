@@ -1,0 +1,786 @@
+
+use Vector::BTree;
+use Vector::SparseVector;
+use Vector::Storage as VStorage;
+use Vector::VectorError;
+use Matrix::QTree;
+use Matrix::SparseMatrix;
+use Matrix::Storage as MStorage;
+use Common::TreeValue;
+
+#[impl(Eq)]
+pub enum* LinearAlgebraError {
+  InconsistentStructureOfStorages(),
+  InconsistentSizeOfArguments(),
+  VectorAdditionProblem(VectorError),
+}
+
+#[impl(Eq,Show)]
+pub enum* MXMError {
+  InconsistentSizeOfArguments(),
+  MatrixAdditionProblem(Matrix::MatrixError),
+}
+
+fn multScalar[T*, F*; fn F(Option[T], Option[T]) -> Option[T]](op_add: F, x: N64, y: Option[T]) -> Option[
+  T;
+] {
+  if x == 1[N64] {
+    y
+  } else {
+    let v = multScalar(op_add, x / 2[N64], y);
+    let res = op_add(v, v);
+    if x % 2[N64] == 0[N64] {
+      res
+    } else {
+      op_add(res, v)
+    }
+  }
+}
+
+pub fn vxm[
+  T*, U*, R, F*, G*;
+  fn F(Option[R], Option[R]) -> Option[R],
+  fn G(Option[T], Option[U]) -> Option[R],
+  Eq[R],
+  Drop[R],
+  Fork[R];
+](op_add: F, op_mult: G, vector: SparseVector[T], matrix: SparseMatrix[U]) -> Result[
+  SparseVector[R], LinearAlgebraError;
+] {
+  let fn inner(size: N64, vector: BTree[Option[T]], matrix: QTree[Option[U]]) -> Result[
+    (BTree[Option[R]], N64), LinearAlgebraError;
+  ] {
+    let fn do_inner(
+      x1: BTree[Option[T]],
+      x2: BTree[Option[T]],
+      y1: QTree[Option[U]],
+      y2: QTree[Option[U]],
+      y3: QTree[Option[U]],
+      y4: QTree[Option[U]],
+    ) -> Result[(BTree[Option[R]], N64), LinearAlgebraError] {
+      let new_size = size / 2[N64];
+
+      let r1 = inner(new_size, x1, y1);
+      let r2 = inner(new_size, x1, y2);
+      let r3 = inner(new_size, x2, y3);
+      let r4 = inner(new_size, x2, y4);
+
+      match (r1, r2, r3, r4) {
+        (
+          Result::Ok((t1, nvals1)),
+          Result::Ok((t2, nvals2)),
+          Result::Ok((t3, nvals3)),
+          Result::Ok((t4, nvals4)),
+        ) {
+          let v1 = SparseVector(new_size, nvals1, VStorage(new_size, t1));
+          let v2 = SparseVector(new_size, nvals2, VStorage(new_size, t2));
+          let v3 = SparseVector(new_size, nvals3, VStorage(new_size, t3));
+          let v4 = SparseVector(new_size, nvals4, VStorage(new_size, t4));
+
+          let fn vadd(v1: SparseVector[R], v2: SparseVector[R]) -> Result[
+            SparseVector[R], VectorError;
+          ] {
+            match v2.2.1 {
+              BTree::Leaf(TreeValue::Dummy()) { Result::Ok(v1) }
+              _ { Vector::map2(v1, v2, op_add) }
+            }
+          }
+
+          let z1 = vadd(v1, v3);
+          let z2 = vadd(v2, v4);
+
+          match (z1, z2) {
+            (Result::Ok(res1), Result::Ok(res2)) {
+              let combined = Vector::mkNode(res1.2.1, res2.2.1);
+              Result::Ok((combined, res1.1 + res2.1))
+            }
+            (Result::Err(e), _) { Result::Err(LinearAlgebraError::VectorAdditionProblem(e)) }
+            (_, Result::Err(e)) { Result::Err(LinearAlgebraError::VectorAdditionProblem(e)) }
+          }
+        }
+        (Result::Err(e), _, _, _) { Result::Err(e) }
+        (_, Result::Err(e), _, _) { Result::Err(e) }
+        (_, _, Result::Err(e), _) { Result::Err(e) }
+        (_, _, _, Result::Err(e)) { Result::Err(e) }
+      }
+    }
+
+    match (vector, matrix) {
+      (BTree::Leaf(TreeValue::UserValue(v1)), QTree::Leaf(TreeValue::UserValue(v2))) {
+        let res = multScalar(op_add, size, op_mult(v1, v2));
+        let nnz = match res {
+          Option::None() { 0[N64] }
+          _ { size }
+        };
+        Result::Ok((BTree::Leaf(TreeValue::UserValue(res)), nnz))
+      }
+      (BTree::Leaf(TreeValue::UserValue(_)), QTree::Node(y1, y2, y3, y4)) {
+        do_inner(vector, vector, y1, y2, y3, y4)
+      }
+      (BTree::Node(x1, x2), QTree::Leaf(TreeValue::UserValue(_))) {
+        do_inner(x1, x2, matrix, matrix, matrix, matrix)
+      }
+      (BTree::Node(x1, x2), QTree::Node(y1, y2, y3, y4)) { do_inner(x1, x2, y1, y2, y3, y4) }
+      (BTree::Leaf(TreeValue::Dummy()), _) { Result::Ok((BTree::Leaf(TreeValue::Dummy()), 0[N64])) }
+      (_, QTree::Leaf(TreeValue::Dummy())) { Result::Ok((BTree::Leaf(TreeValue::Dummy()), 0[N64])) }
+      (_, _) { Result::Err(LinearAlgebraError::InconsistentStructureOfStorages()) }
+    }
+  }
+
+  if vector.0 == matrix.0 {
+    let vector_storage = if vector.2.0 < matrix.3.0 {
+      let fn increaseStorage(storage_data: BTree[Option[T]], current_size: N64, bound: N64) -> BTree[
+        Option[T];
+      ] {
+        if current_size == bound {
+          storage_data
+        } else {
+          let new_data = BTree::Node(storage_data, BTree::Leaf(TreeValue::Dummy()));
+          increaseStorage(new_data, current_size * 2[N64], bound)
+        }
+      }
+
+      let target_size = matrix.3.0;
+      VStorage(target_size, increaseStorage(vector.2.1, vector.2.0, target_size))
+    } else {
+      vector.2
+    };
+
+    match inner(vector_storage.0, vector_storage.1, matrix.3.1) {
+      Result::Err(e) { Result::Err(e) }
+      Result::Ok((storage, nvals)) {
+        Result::Ok(SparseVector(matrix.1, nvals, VStorage(matrix.3.0, storage)))
+      }
+    }
+  } else {
+    Result::Err(LinearAlgebraError::InconsistentSizeOfArguments())
+  }
+}
+
+pub fn mxm[
+  T*, U*, R, F*, G*;
+  fn F(Option[R], Option[R]) -> Option[R],
+  fn G(Option[T], Option[U]) -> Option[R],
+  Eq[T],
+  Eq[R],
+  Drop[R],
+  Fork[R];
+](op_add: F, op_mult: G, m1: SparseMatrix[T], m2: SparseMatrix[U]) -> Result[
+  SparseMatrix[R], MXMError;
+] {
+  let fn shrink(tree: QTree[Option[R]], size: N64) -> (QTree[Option[R]], N64) {
+    match tree {
+      QTree::Node(nw, ne, sw, _) {
+        if ne == sw {
+          let ne_is_dummy = match ne {
+            QTree::Leaf(TreeValue::Dummy()) { true }
+            _ { false }
+          };
+          if ne_is_dummy {
+            shrink(nw, size / 2[N64])
+          } else {
+            (tree, size)
+          }
+        } else {
+          (tree, size)
+        }
+      }
+      _ { (tree, size) }
+    }
+  }
+
+  let fn expandT(tree: QTree[Option[T]], expandRatio: N64) -> QTree[Option[T]] {
+    if expandRatio == 1[N64] {
+      tree
+    } else {
+      let expanded = QTree::Node(
+        tree,
+        QTree::Leaf(TreeValue::Dummy()),
+        QTree::Leaf(TreeValue::Dummy()),
+        QTree::Leaf(TreeValue::Dummy()),
+      );
+      expandT(expanded, expandRatio / 2[N64])
+    }
+  }
+
+  let fn expandU(tree: QTree[Option[U]], expandRatio: N64) -> QTree[Option[U]] {
+    if expandRatio == 1[N64] {
+      tree
+    } else {
+      let expanded = QTree::Node(
+        tree,
+        QTree::Leaf(TreeValue::Dummy()),
+        QTree::Leaf(TreeValue::Dummy()),
+        QTree::Leaf(TreeValue::Dummy()),
+      );
+      expandU(expanded, expandRatio / 2[N64])
+    }
+  }
+
+  let fn multiply(size: N64, m1: QTree[Option[T]], m2: QTree[Option[U]]) -> Result[
+    (QTree[Option[R]], N64), MXMError;
+  ] {
+    let fn divided(
+      nw1: QTree[Option[T]],
+      ne1: QTree[Option[T]],
+      sw1: QTree[Option[T]],
+      se1: QTree[Option[T]],
+      nw2: QTree[Option[U]],
+      ne2: QTree[Option[U]],
+      sw2: QTree[Option[U]],
+      se2: QTree[Option[U]],
+    ) -> Result[(QTree[Option[R]], N64), MXMError] {
+      let halfSize = size / 2[N64];
+
+      let nw1_x_nw2 = multiply(halfSize, nw1, nw2);
+      let ne1_x_sw2 = multiply(halfSize, ne1, sw2);
+      let nw1_x_ne2 = multiply(halfSize, nw1, ne2);
+      let ne1_x_se2 = multiply(halfSize, ne1, se2);
+      let sw1_x_nw2 = multiply(halfSize, sw1, nw2);
+      let se1_x_sw2 = multiply(halfSize, se1, sw2);
+      let sw1_x_ne2 = multiply(halfSize, sw1, ne2);
+      let se1_x_se2 = multiply(halfSize, se1, se2);
+
+      match (nw1_x_nw2, ne1_x_sw2, nw1_x_ne2, ne1_x_se2, sw1_x_nw2, se1_x_sw2, sw1_x_ne2, se1_x_se2) {
+        (
+          Result::Ok((tnw1_x_nw2, nvals_nw1_x_nw2)),
+          Result::Ok((tne1_x_sw2, nvals_ne1_x_sw2)),
+          Result::Ok((tnw1_x_ne2, nvals_nw1_x_ne2)),
+          Result::Ok((tne1_x_se2, nvals_ne1_x_se2)),
+          Result::Ok((tsw1_x_nw2, nvals_sw1_x_nw2)),
+          Result::Ok((tse1_x_sw2, nvals_se1_x_sw2)),
+          Result::Ok((tsw1_x_ne2, nvals_sw1_x_ne2)),
+          Result::Ok((tse1_x_se2, nvals_se1_x_se2)),
+        ) {
+          let nrows = halfSize * 1[N64];
+          let ncols = halfSize * 1[N64];
+          let storageSize = halfSize;
+
+          let nw1_x_nw2_sm = SparseMatrix(
+            nrows,
+            ncols,
+            nvals_nw1_x_nw2,
+            MStorage(storageSize, tnw1_x_nw2),
+          );
+          let ne1_x_sw2_sm = SparseMatrix(
+            nrows,
+            ncols,
+            nvals_ne1_x_sw2,
+            MStorage(storageSize, tne1_x_sw2),
+          );
+          let nw1_x_ne2_sm = SparseMatrix(
+            nrows,
+            ncols,
+            nvals_nw1_x_ne2,
+            MStorage(storageSize, tnw1_x_ne2),
+          );
+          let ne1_x_se2_sm = SparseMatrix(
+            nrows,
+            ncols,
+            nvals_ne1_x_se2,
+            MStorage(storageSize, tne1_x_se2),
+          );
+          let sw1_x_nw2_sm = SparseMatrix(
+            nrows,
+            ncols,
+            nvals_sw1_x_nw2,
+            MStorage(storageSize, tsw1_x_nw2),
+          );
+          let se1_x_sw2_sm = SparseMatrix(
+            nrows,
+            ncols,
+            nvals_se1_x_sw2,
+            MStorage(storageSize, tse1_x_sw2),
+          );
+          let sw1_x_ne2_sm = SparseMatrix(
+            nrows,
+            ncols,
+            nvals_sw1_x_ne2,
+            MStorage(storageSize, tsw1_x_ne2),
+          );
+          let se1_x_se2_sm = SparseMatrix(
+            nrows,
+            ncols,
+            nvals_se1_x_se2,
+            MStorage(storageSize, tse1_x_se2),
+          );
+
+          let fn mAdd(m1: SparseMatrix[R], m2: SparseMatrix[R]) -> Result[SparseMatrix[R], MXMError] {
+            match m2.3.1 {
+              QTree::Leaf(TreeValue::Dummy()) { Result::Ok(m1) }
+              _ {
+                match Matrix::map2(m1, m2, op_add) {
+                  Result::Ok(r) { Result::Ok(r) }
+                  Result::Err(_e) { Result::Err(MXMError::MatrixAdditionProblem(_e)) }
+                }
+              }
+            }
+          }
+
+          let rnw = mAdd(nw1_x_nw2_sm, ne1_x_sw2_sm);
+          let rne = mAdd(nw1_x_ne2_sm, ne1_x_se2_sm);
+          let rsw = mAdd(sw1_x_nw2_sm, se1_x_sw2_sm);
+          let rse = mAdd(sw1_x_ne2_sm, se1_x_se2_sm);
+
+          match (rnw, rne, rsw, rse) {
+            (Result::Ok(nw), Result::Ok(ne), Result::Ok(sw), Result::Ok(se)) {
+              let result_tree = QTree::Node(nw.3.1, ne.3.1, sw.3.1, se.3.1);
+              Result::Ok((result_tree, nw.2 + ne.2 + sw.2 + se.2))
+            }
+            (Result::Err(e), _, _, _) { Result::Err(e) }
+            (_, Result::Err(e), _, _) { Result::Err(e) }
+            (_, _, Result::Err(e), _) { Result::Err(e) }
+            (_, _, _, Result::Err(e)) { Result::Err(e) }
+          }
+        }
+        (Result::Err(e), _, _, _, _, _, _, _) { Result::Err(e) }
+        (_, Result::Err(e), _, _, _, _, _, _) { Result::Err(e) }
+        (_, _, Result::Err(e), _, _, _, _, _) { Result::Err(e) }
+        (_, _, _, Result::Err(e), _, _, _, _) { Result::Err(e) }
+        (_, _, _, _, Result::Err(e), _, _, _) { Result::Err(e) }
+        (_, _, _, _, _, Result::Err(e), _, _) { Result::Err(e) }
+        (_, _, _, _, _, _, Result::Err(e), _) { Result::Err(e) }
+        (_, _, _, _, _, _, _, Result::Err(e)) { Result::Err(e) }
+      }
+    }
+
+    match (m1, m2) {
+      (QTree::Leaf(TreeValue::UserValue(v1)), QTree::Leaf(TreeValue::UserValue(v2))) {
+        let res = multScalar(op_add, size, op_mult(v1, v2));
+        let nnz = match res {
+          Option::None() { 0[N64] }
+          _ { size * size }
+        };
+        Result::Ok((QTree::Leaf(TreeValue::UserValue(res)), nnz))
+      }
+      (QTree::Leaf(TreeValue::UserValue(_)), QTree::Node(nw2, ne2, sw2, se2)) {
+        divided(m1, m1, m1, m1, nw2, ne2, sw2, se2)
+      }
+      (QTree::Node(nw1, ne1, sw1, se1), QTree::Leaf(TreeValue::UserValue(_))) {
+        divided(nw1, ne1, sw1, se1, m2, m2, m2, m2)
+      }
+      (QTree::Node(nw1, ne1, sw1, se1), QTree::Node(nw2, ne2, sw2, se2)) {
+        divided(nw1, ne1, sw1, se1, nw2, ne2, sw2, se2)
+      }
+      (QTree::Leaf(TreeValue::Dummy()), _) { Result::Ok((QTree::Leaf(TreeValue::Dummy()), 0[N64])) }
+      (_, QTree::Leaf(TreeValue::Dummy())) { Result::Ok((QTree::Leaf(TreeValue::Dummy()), 0[N64])) }
+    }
+  }
+
+  if m1.1 == m2.0 {
+    let nrows = m1.0;
+    let ncols = m2.1;
+    let storageSize = if m1.3.0 > m2.3.0 {
+      m1.3.0
+    } else {
+      m2.3.0
+    };
+
+    let (tree1, tree2) = if m1.3.0 < m2.3.0 {
+      (expandT(m1.3.1, m2.3.0 / m1.3.0), m2.3.1)
+    } else {
+      if m1.3.0 > m2.3.0 {
+        (m1.3.1, expandU(m2.3.1, m1.3.0 / m2.3.0))
+      } else {
+        (m1.3.1, m2.3.1)
+      }
+    };
+
+    match multiply(storageSize, tree1, tree2) {
+      Result::Ok((tree, nvals)) {
+        let (shrunkTree, shrunkSize) = shrink(tree, storageSize);
+        Result::Ok(SparseMatrix(nrows, ncols, nvals, MStorage(shrunkSize, shrunkTree)))
+      }
+      Result::Err(e) { Result::Err(e) }
+    }
+  } else {
+    Result::Err(MXMError::InconsistentSizeOfArguments())
+  }
+}
+
+fn leaf_v(v: Option[N64]) -> QTree[Option[N64]] {
+  QTree::Leaf(TreeValue::UserValue(v))
+}
+
+fn leaf_n() -> QTree[Option[N64]] {
+  QTree::Leaf(TreeValue::UserValue(Option::None()))
+}
+
+fn leaf_d() -> QTree[Option[N64]] {
+  QTree::Leaf(TreeValue::Dummy())
+}
+
+fn vleaf_v(v: Option[N64]) -> BTree[Option[N64]] {
+  BTree::Leaf(TreeValue::UserValue(v))
+}
+
+fn vleaf_d() -> BTree[Option[N64]] {
+  BTree::Leaf(TreeValue::Dummy())
+}
+
+fn op_add(x: Option[N64], y: Option[N64]) -> Option[N64] {
+  match (x, y) {
+    (Option::Some(a), Option::Some(b)) { Option::Some(a + b) }
+    (Option::Some(a), _) { Option::Some(a) }
+    (_, Option::Some(a)) { Option::Some(a) }
+    _ { Option::None() }
+  }
+}
+
+fn op_mult(x: Option[N64], y: Option[N64]) -> Option[N64] {
+  match (x, y) {
+    (Option::Some(a), Option::Some(b)) { Option::Some(a * b) }
+    _ { Option::None() }
+  }
+}
+
+pub fn run_tests(&io: &IO) {
+  test_vxm_all_power_of_two(&io);
+  test_vxm_3x4(&io);
+  test_vxm_4x3(&io);
+  test_vxm_3x5(&io);
+  test_simple_mxm(&io);
+  test_sparse_mxm(&io);
+  test_shrinking_mxm(&io);
+  test_expanding_mxm(&io);
+}
+
+fn test_vxm_all_power_of_two(&io: &IO) {
+  let tree = QTree::Node(
+    QTree::Node(
+      leaf_n(),
+      leaf_v(Option::Some(1[N64])),
+      leaf_v(Option::Some(3[N64])),
+      leaf_v(Option::Some(2[N64])),
+    ),
+    QTree::Node(
+      leaf_v(Option::Some(1[N64])),
+      leaf_n(),
+      leaf_v(Option::Some(2[N64])),
+      leaf_v(Option::Some(3[N64])),
+    ),
+    leaf_n(),
+    QTree::Node(
+      leaf_v(Option::Some(1[N64])),
+      leaf_v(Option::Some(2[N64])),
+      leaf_v(Option::Some(3[N64])),
+      leaf_n(),
+    ),
+  );
+  let store = MStorage(4[N64], tree);
+  let m = SparseMatrix(4[N64], 4[N64], 9[N64], store);
+
+  let vtree = vleaf_v(Option::Some(2[N64]));
+  let vstore = VStorage(4[N64], vtree);
+  let v = SparseVector(4[N64], 4[N64], vstore);
+
+  let expected_tree = BTree::Node(
+    vleaf_v(Option::Some(6[N64])),
+    BTree::Node(vleaf_v(Option::Some(14[N64])), vleaf_v(Option::Some(10[N64]))),
+  );
+  let expected_vstore = VStorage(4[N64], expected_tree);
+  let expected = Result::Ok(SparseVector(4[N64], 4[N64], expected_vstore));
+
+  let actual = vxm(op_add, op_mult, v, m);
+
+  if actual == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: vxm all power of two");
+  }
+}
+
+fn test_vxm_3x4(&io: &IO) {
+  let tree = QTree::Node(
+    QTree::Node(
+      leaf_n(),
+      leaf_v(Option::Some(1[N64])),
+      leaf_v(Option::Some(3[N64])),
+      leaf_v(Option::Some(2[N64])),
+    ),
+    QTree::Node(
+      leaf_v(Option::Some(1[N64])),
+      leaf_n(),
+      leaf_v(Option::Some(2[N64])),
+      leaf_v(Option::Some(3[N64])),
+    ),
+    QTree::Node(leaf_n(), leaf_n(), leaf_d(), leaf_d()),
+    QTree::Node(leaf_v(Option::Some(1[N64])), leaf_v(Option::Some(2[N64])), leaf_d(), leaf_d()),
+  );
+  let store = MStorage(4[N64], tree);
+  let m = SparseMatrix(3[N64], 4[N64], 8[N64], store);
+
+  let vtree = BTree::Node(
+    vleaf_v(Option::Some(2[N64])),
+    BTree::Node(vleaf_v(Option::Some(2[N64])), vleaf_d()),
+  );
+  let vstore = VStorage(4[N64], vtree);
+  let v = SparseVector(3[N64], 3[N64], vstore);
+
+  let expected_tree = BTree::Node(
+    vleaf_v(Option::Some(6[N64])),
+    BTree::Node(vleaf_v(Option::Some(8[N64])), vleaf_v(Option::Some(10[N64]))),
+  );
+  let expected_vstore = VStorage(4[N64], expected_tree);
+  let expected = Result::Ok(SparseVector(4[N64], 4[N64], expected_vstore));
+
+  let actual = vxm(op_add, op_mult, v, m);
+
+  if actual == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: vxm 3x4");
+  }
+}
+
+fn test_vxm_4x3(&io: &IO) {
+  let tree = QTree::Node(
+    QTree::Node(
+      leaf_n(),
+      leaf_v(Option::Some(1[N64])),
+      leaf_v(Option::Some(3[N64])),
+      leaf_v(Option::Some(2[N64])),
+    ),
+    QTree::Node(leaf_v(Option::Some(1[N64])), leaf_d(), leaf_v(Option::Some(2[N64])), leaf_d()),
+    leaf_n(),
+    QTree::Node(leaf_v(Option::Some(1[N64])), leaf_d(), leaf_v(Option::Some(3[N64])), leaf_d()),
+  );
+  let store = MStorage(4[N64], tree);
+  let m = SparseMatrix(4[N64], 3[N64], 7[N64], store);
+
+  let vtree = vleaf_v(Option::Some(2[N64]));
+  let vstore = VStorage(4[N64], vtree);
+  let v = SparseVector(4[N64], 4[N64], vstore);
+
+  let expected_tree = BTree::Node(
+    vleaf_v(Option::Some(6[N64])),
+    BTree::Node(vleaf_v(Option::Some(14[N64])), vleaf_d()),
+  );
+  let expected_vstore = VStorage(4[N64], expected_tree);
+  let expected = Result::Ok(SparseVector(3[N64], 3[N64], expected_vstore));
+
+  let actual = vxm(op_add, op_mult, v, m);
+
+  if actual == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: vxm 4x3");
+  }
+}
+
+fn test_vxm_3x5(&io: &IO) {
+  let tree = QTree::Node(
+    QTree::Node(
+      QTree::Node(
+        leaf_n(),
+        leaf_v(Option::Some(1[N64])),
+        leaf_v(Option::Some(3[N64])),
+        leaf_v(Option::Some(2[N64])),
+      ),
+      QTree::Node(
+        leaf_v(Option::Some(1[N64])),
+        leaf_n(),
+        leaf_v(Option::Some(2[N64])),
+        leaf_v(Option::Some(3[N64])),
+      ),
+      QTree::Node(leaf_n(), leaf_n(), leaf_d(), leaf_d()),
+      QTree::Node(leaf_v(Option::Some(1[N64])), leaf_v(Option::Some(2[N64])), leaf_d(), leaf_d()),
+    ),
+    QTree::Node(
+      QTree::Node(leaf_n(), leaf_d(), leaf_v(Option::Some(1[N64])), leaf_d()),
+      leaf_d(),
+      QTree::Node(leaf_n(), leaf_d(), leaf_d(), leaf_d()),
+      leaf_d(),
+    ),
+    leaf_d(),
+    leaf_d(),
+  );
+  let store = MStorage(8[N64], tree);
+  let m = SparseMatrix(3[N64], 5[N64], 9[N64], store);
+
+  let vtree = BTree::Node(
+    vleaf_v(Option::Some(2[N64])),
+    BTree::Node(vleaf_v(Option::Some(2[N64])), vleaf_d()),
+  );
+  let vstore = VStorage(4[N64], vtree);
+  let v = SparseVector(3[N64], 3[N64], vstore);
+
+  let expected_tree = BTree::Node(
+    BTree::Node(
+      vleaf_v(Option::Some(6[N64])),
+      BTree::Node(vleaf_v(Option::Some(8[N64])), vleaf_v(Option::Some(10[N64]))),
+    ),
+    BTree::Node(BTree::Node(vleaf_v(Option::Some(2[N64])), vleaf_d()), vleaf_d()),
+  );
+  let expected_vstore = VStorage(8[N64], expected_tree);
+  let expected = Result::Ok(SparseVector(5[N64], 5[N64], expected_vstore));
+
+  let actual = vxm(op_add, op_mult, v, m);
+
+  if actual == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: vxm 3x5");
+  }
+}
+
+fn test_simple_mxm(&io: &IO) {
+  let tree = QTree::Node(
+    leaf_v(Option::Some(2[N64])),
+    QTree::Node(leaf_v(Option::Some(2[N64])), leaf_d(), leaf_v(Option::Some(2[N64])), leaf_d()),
+    QTree::Node(leaf_v(Option::Some(2[N64])), leaf_v(Option::Some(2[N64])), leaf_d(), leaf_d()),
+    QTree::Node(leaf_v(Option::Some(2[N64])), leaf_d(), leaf_d(), leaf_d()),
+  );
+
+  let tree_expected = QTree::Node(
+    leaf_v(Option::Some(12[N64])),
+    QTree::Node(leaf_v(Option::Some(12[N64])), leaf_d(), leaf_v(Option::Some(12[N64])), leaf_d()),
+    QTree::Node(leaf_v(Option::Some(12[N64])), leaf_v(Option::Some(12[N64])), leaf_d(), leaf_d()),
+    QTree::Node(leaf_v(Option::Some(12[N64])), leaf_d(), leaf_d(), leaf_d()),
+  );
+
+  let m1 = SparseMatrix(3[N64], 3[N64], 9[N64], MStorage(4[N64], tree));
+  let m2 = m1;
+
+  let expected = SparseMatrix(3[N64], 3[N64], 9[N64], MStorage(4[N64], tree_expected));
+
+  let actual = match mxm(op_add, op_mult, m1, m2) {
+    Result::Ok(m) { m }
+    Result::Err(_) { SparseMatrix(0[N64], 0[N64], 0[N64], MStorage(1[N64], leaf_d())) }
+  };
+
+  if actual.3.1 == expected.3.1 {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: simple mxm");
+  }
+}
+
+fn test_sparse_mxm(&io: &IO) {
+  let data1: List[(N64, N64, N64)] = [
+    (0[N64], 0[N64], 1[N64]),
+    (1[N64], 1[N64], 2[N64]),
+    (2[N64], 2[N64], 3[N64]),
+  ];
+  data1.sort();
+
+  let data2: List[(N64, N64, N64)] = [
+    (0[N64], 0[N64], 3[N64]),
+    (1[N64], 1[N64], 2[N64]),
+    (2[N64], 2[N64], 1[N64]),
+  ];
+  data2.sort();
+
+  let expectedData: List[(N64, N64, N64)] = [
+    (0[N64], 0[N64], 3[N64]),
+    (1[N64], 1[N64], 4[N64]),
+    (2[N64], 2[N64], 3[N64]),
+  ];
+  expectedData.sort();
+
+  let coord1 = Matrix::CoordiInteList(3[N64], 3[N64], data1);
+  let coord2 = Matrix::CoordiInteList(3[N64], 3[N64], data2);
+  let expectedCoord = Matrix::CoordiInteList(3[N64], 3[N64], expectedData);
+
+  let m1 = Matrix::fromCoordiInteList(coord1);
+  let m2 = Matrix::fromCoordiInteList(coord2);
+  let expected = Matrix::fromCoordiInteList(expectedCoord);
+
+  let actual = match mxm(op_add, op_mult, m1, m2) {
+    Result::Ok(m) { m }
+    Result::Err(_) { SparseMatrix(0[N64], 0[N64], 0[N64], MStorage(1[N64], leaf_d())) }
+  };
+
+  if actual == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: sparse mxm");
+  }
+}
+
+fn test_shrinking_mxm(&io: &IO) {
+  let data1: List[(N64, N64, N64)] = [
+    (0[N64], 0[N64], 1[N64]),
+    (0[N64], 2[N64], 2[N64]),
+    (1[N64], 1[N64], 3[N64]),
+  ];
+  data1.sort();
+
+  let data2: List[(N64, N64, N64)] = [
+    (0[N64], 1[N64], 4[N64]),
+    (1[N64], 0[N64], 5[N64]),
+    (2[N64], 0[N64], 6[N64]),
+  ];
+  data2.sort();
+
+  let expectedData: List[(N64, N64, N64)] = [
+    (0[N64], 0[N64], 12[N64]),
+    (0[N64], 1[N64], 4[N64]),
+    (1[N64], 0[N64], 15[N64]),
+  ];
+  expectedData.sort();
+
+  let coord1 = Matrix::CoordiInteList(2[N64], 3[N64], data1);
+  let coord2 = Matrix::CoordiInteList(3[N64], 2[N64], data2);
+  let expectedCoord = Matrix::CoordiInteList(2[N64], 2[N64], expectedData);
+
+  let m1 = Matrix::fromCoordiInteList(coord1);
+  let m2 = Matrix::fromCoordiInteList(coord2);
+  let expected = Matrix::fromCoordiInteList(expectedCoord);
+
+  let actual = match mxm(op_add, op_mult, m1, m2) {
+    Result::Ok(m) { m }
+    Result::Err(_) { SparseMatrix(0[N64], 0[N64], 0[N64], MStorage(1[N64], leaf_d())) }
+  };
+
+  if actual == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: shrinking mxm");
+  }
+}
+
+fn test_expanding_mxm(&io: &IO) {
+  let data1: List[(N64, N64, N64)] = [
+    (0[N64], 0[N64], 1[N64]),
+    (1[N64], 1[N64], 2[N64]),
+    (2[N64], 0[N64], 3[N64]),
+  ];
+  data1.sort();
+
+  let data2: List[(N64, N64, N64)] = [
+    (0[N64], 0[N64], 4[N64]),
+    (0[N64], 1[N64], 5[N64]),
+    (0[N64], 2[N64], 6[N64]),
+  ];
+  data2.sort();
+
+  let expectedData: List[(N64, N64, N64)] = [
+    (0[N64], 0[N64], 4[N64]),
+    (0[N64], 1[N64], 5[N64]),
+    (0[N64], 2[N64], 6[N64]),
+    (2[N64], 0[N64], 12[N64]),
+    (2[N64], 1[N64], 15[N64]),
+    (2[N64], 2[N64], 18[N64]),
+  ];
+  expectedData.sort();
+
+  let coord1 = Matrix::CoordiInteList(3[N64], 2[N64], data1);
+  let coord2 = Matrix::CoordiInteList(2[N64], 3[N64], data2);
+  let expectedCoord = Matrix::CoordiInteList(3[N64], 3[N64], expectedData);
+
+  let m1 = Matrix::fromCoordiInteList(coord1);
+  let m2 = Matrix::fromCoordiInteList(coord2);
+  let expected = Matrix::fromCoordiInteList(expectedCoord);
+
+  let actual = match mxm(op_add, op_mult, m1, m2) {
+    Result::Ok(m) { m }
+    Result::Err(_) { SparseMatrix(0[N64], 0[N64], 0[N64], MStorage(1[N64], leaf_d())) }
+  };
+
+  if actual == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: expanding mxm");
+  }
+}

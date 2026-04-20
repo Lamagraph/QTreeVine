@@ -1,0 +1,506 @@
+
+use Common::TreeValue;
+use Common::CommonInternal::getNearestUpperPowerOfTwo;
+
+#[impl(Eq)]
+pub enum* BTree[T] {
+  Leaf(TreeValue[T]),
+  Node(BTree[T], BTree[T]),
+}
+
+#[impl(Eq)]
+pub struct* Storage[T](pub (N64, BTree[T]));
+
+#[impl(Eq)]
+pub struct* SparseVector[T](pub (N64, N64, Storage[Option[T]]));
+
+#[impl(Eq,Show)]
+pub enum* VectorError {
+  InconsistentStructureOfStorages(),
+  InconsistentSizeOfArguments(),
+}
+
+#[impl(Eq)]
+pub struct* CoordinateList[T](pub (N64, List[(N64, T)]));
+
+pub fn mkNode[T*; Eq[T]](t1: BTree[T], t2: BTree[T]) -> BTree[T] {
+  match (t1, t2) {
+    (BTree::Leaf(v1), BTree::Leaf(v2)) {
+      if v1 == v2 {
+        BTree::Leaf(v1)
+      } else {
+        BTree::Node(t1, t2)
+      }
+    }
+    _ { BTree::Node(t1, t2) }
+  }
+}
+
+pub fn fromCoordinateList[T*; Ord[T], Eq[T]](lst: CoordinateList[T]) -> SparseVector[T] {
+  let length = lst.0;
+  let nvals = (lst.1.len() as N64) * 1[N64];
+  let storageSize = getNearestUpperPowerOfTwo(length).assume() * 1[N64];
+
+  let sortedData = lst.1;
+  sortedData.sort();
+  let (tree, _) = fromCoordList_traverse(sortedData, 0[N64], storageSize, length);
+
+  SparseVector(length, nvals, Storage(storageSize, tree))
+}
+
+fn fromCoordList_traverse[T*; Eq[T]](
+  coordinates: List[(N64, T)],
+  pointer: N64,
+  size: N64,
+  length: N64,
+) -> (BTree[Option[T]], List[(N64, T)]) {
+  match coordinates.head_tail() {
+    None() {
+      if pointer + size < length {
+        (BTree::Leaf(TreeValue::UserValue(Option::None())), [])
+      } else {
+        if pointer >= length {
+          (BTree::Leaf(TreeValue::Dummy()), [])
+        } else {
+          let halfSize = size / 2[N64];
+          let (left, lCoords) = fromCoordList_traverse(coordinates, pointer, halfSize, length);
+          let (right, rCoords) = fromCoordList_traverse(
+            lCoords,
+            pointer + halfSize,
+            halfSize,
+            length,
+          );
+          (mkNode(left, right), rCoords)
+        }
+      }
+    }
+    Some(((idx, value), coords)) {
+      if idx > pointer + size {
+        (BTree::Leaf(TreeValue::UserValue(Option::None())), coordinates)
+      } else {
+        if idx == pointer and size == 1[N64] {
+          (BTree::Leaf(TreeValue::UserValue(Some(value))), coords)
+        } else {
+          let halfSize = size / 2[N64];
+          let (left, lCoords) = fromCoordList_traverse(coordinates, pointer, halfSize, length);
+          let (right, rCoords) = fromCoordList_traverse(
+            lCoords,
+            pointer + halfSize,
+            halfSize,
+            length,
+          );
+          (mkNode(left, right), rCoords)
+        }
+      }
+    }
+  }
+}
+
+pub fn toCoordinateList[T*](vector: SparseVector[T]) -> CoordinateList[T] {
+  let length = vector.0;
+  let lst = toCoordList_traverse(vector.2.1, [], 0[N64], vector.2.0, length);
+  CoordinateList(length, lst)
+}
+
+fn toCoordList_traverse[T*](
+  tree: BTree[Option[T]],
+  accum: List[(N64, T)],
+  pointer: N64,
+  size: N64,
+  length: N64,
+) -> List[(N64, T)] {
+  match tree {
+    BTree::Leaf(TreeValue::Dummy()) { accum }
+    BTree::Leaf(TreeValue::UserValue(Option::None())) { accum }
+    BTree::Leaf(TreeValue::UserValue(Some(value))) {
+      let result = accum;
+      let i = 0[N64];
+      while i < size {
+        let idx = pointer + i;
+        if idx < length {
+          result.push_back((idx, value));
+        }
+        i += 1[N64];
+      }
+      result
+    }
+    BTree::Node(left, right) {
+      let halfSize = size / 2[N64];
+      let lAccum = toCoordList_traverse(left, accum, pointer, halfSize, length);
+      toCoordList_traverse(right, lAccum, pointer + halfSize, halfSize, length)
+    }
+  }
+}
+
+pub fn .map[T*, U, F*; fn F(Option[T]) -> Option[U], Eq[U], Drop[U], Fork[U]](
+  vector: SparseVector[T],
+  f: F,
+) -> SparseVector[U] {
+  let (storage, nvals) = vector.2.1.map_inner(vector.2.0, f);
+  SparseVector(vector.0, nvals, Storage(vector.2.0, storage))
+}
+
+pub fn map2[T*, U*, R, F*; fn F(Option[T], Option[U]) -> Option[R], Eq[R], Drop[R], Fork[R]](
+  vector1: SparseVector[T],
+  vector2: SparseVector[U],
+  f: F,
+) -> Result[SparseVector[R], VectorError] {
+  let len1 = vector1.0;
+
+  let fn inner(size: N64, t1: BTree[Option[T]], t2: BTree[Option[U]]) -> Result[
+    (BTree[Option[R]], N64), VectorError;
+  ] {
+    let fn do_inner(
+      x1: BTree[Option[T]],
+      x2: BTree[Option[T]],
+      y1: BTree[Option[U]],
+      y2: BTree[Option[U]],
+    ) -> Result[(BTree[Option[R]], N64), VectorError] {
+      let new_size = size / 2[N64];
+      let r1 = inner(new_size, x1, y1);
+      let r2 = inner(new_size, x2, y2);
+      match (r1, r2) {
+        (Result::Ok((t1, nvals1)), Result::Ok((t2, nvals2))) {
+          Result::Ok((mkNode(t1, t2), nvals1 + nvals2))
+        }
+        (Result::Err(e), _) { Result::Err(e) }
+        (_, Result::Err(e)) { Result::Err(e) }
+      }
+    }
+
+    match (t1, t2) {
+      (BTree::Node(x1, x2), BTree::Leaf(_)) { do_inner(x1, x2, t2, t2) }
+      (BTree::Leaf(_), BTree::Node(y1, y2)) { do_inner(t1, t1, y1, y2) }
+      (BTree::Node(x1, x2), BTree::Node(y1, y2)) { do_inner(x1, x2, y1, y2) }
+      (BTree::Leaf(TreeValue::Dummy()), BTree::Leaf(TreeValue::Dummy())) {
+        Result::Ok((BTree::Leaf(TreeValue::Dummy()), 0[N64]))
+      }
+      (BTree::Leaf(TreeValue::UserValue(v1)), BTree::Leaf(TreeValue::UserValue(v2))) {
+        let res = f(v1, v2);
+        let nnz = match res {
+          None() { 0[N64] }
+          _ { size }
+        };
+        Result::Ok((BTree::Leaf(TreeValue::UserValue(res)), nnz))
+      }
+      _ { Result::Err(VectorError::InconsistentStructureOfStorages()) }
+    }
+  }
+
+  if len1 == vector2.0 {
+    match inner(vector1.2.0, vector1.2.1, vector2.2.1) {
+      Result::Err(e) { Result::Err(e) }
+      Result::Ok((storage, nvals)) {
+        Result::Ok(SparseVector(len1, nvals, Storage(vector1.2.0, storage)))
+      }
+    }
+  } else {
+    Result::Err(VectorError::InconsistentSizeOfArguments())
+  }
+}
+
+pub fn mask[T*, U*, F*; fn F(Option[U]) -> Bool, Eq[T]](
+  vector1: SparseVector[T],
+  vector2: SparseVector[U],
+  f: F,
+) -> Result[SparseVector[T], VectorError] {
+  let filter_fn = fn* (v1: Option[T], v2: Option[U]) -> Option[T] {
+    if f(v2) {
+      v1
+    } else {
+      Option::None()
+    }
+  };
+  map2(vector1, vector2, filter_fn)
+}
+
+fn .map_inner[T*, U, F*; fn F(Option[T]) -> Option[U], Eq[U], Drop[U], Fork[U]](
+  tree: BTree[Option[T]],
+  size: N64,
+  f: F,
+) -> (BTree[Option[U]], N64) {
+  match tree {
+    BTree::Node(left, right) {
+      let (t1, nvals1) = left.map_inner(size / 2[N64], f);
+      let (t2, nvals2) = right.map_inner(size / 2[N64], f);
+      (mkNode(t1, t2), nvals1 + nvals2)
+    }
+    BTree::Leaf(TreeValue::Dummy()) { (BTree::Leaf(TreeValue::Dummy()), 0[N64]) }
+    BTree::Leaf(TreeValue::UserValue(v)) {
+      let res = f(v);
+      let nnz = match res {
+        None() { 0[N64] }
+        _ { size }
+      };
+      (BTree::Leaf(TreeValue::UserValue(res)), nnz)
+    }
+  }
+}
+
+pub fn run_tests(&io: &IO) {
+  test_map_power_of_two(&io);
+  test_map_non_power_of_two(&io);
+  test_conversion_identity(&io);
+  test_condensation_of_empty(&io);
+  test_map2_power_of_two(&io);
+  test_map2_non_power_of_two(&io);
+  test_simple_addition(&io);
+}
+
+fn test_map_power_of_two(&io: &IO) {
+  let tree = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(1[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Leaf(TreeValue::UserValue(Some(2[N64]))),
+  );
+  let store = Storage(8[N64], tree);
+  let v = SparseVector(8[N64], 6[N64], store);
+
+  let double = fn* (x: Option[N64]) -> Option[N64] {
+    match x {
+      Some(a) { Some(a * 2[N64]) }
+      _ { Option::None() }
+    }
+  };
+
+  let result = v.map(double);
+
+  let expectedTree = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(2[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Leaf(TreeValue::UserValue(Some(4[N64]))),
+  );
+  let expectedStore = Storage(8[N64], expectedTree);
+  let expected = SparseVector(8[N64], 6[N64], expectedStore);
+
+  if result == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: map power of two");
+  }
+}
+
+fn test_map_non_power_of_two(&io: &IO) {
+  let tree = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(1[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Node(BTree::Leaf(TreeValue::UserValue(Option::None())), BTree::Leaf(TreeValue::Dummy())),
+  );
+  let store = Storage(8[N64], tree);
+  let v = SparseVector(6[N64], 2[N64], store);
+
+  let double = fn* (x: Option[N64]) -> Option[N64] {
+    match x {
+      Some(a) { Some(a * 2[N64]) }
+      _ { Option::None() }
+    }
+  };
+
+  let result = v.map(double);
+
+  let expectedTree = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(2[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Node(BTree::Leaf(TreeValue::UserValue(Option::None())), BTree::Leaf(TreeValue::Dummy())),
+  );
+  let expectedStore = Storage(8[N64], expectedTree);
+  let expected = SparseVector(6[N64], 2[N64], expectedStore);
+
+  if result == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: map non-power of two");
+  }
+}
+
+fn test_conversion_identity(&io: &IO) {
+  let coords = CoordinateList(
+    10[N64],
+    [(0[N64], 3[N64]), (3[N64], 1[N64]), (7[N64], 2[N64]), (8[N64], 2[N64]), (9[N64], 2[N64])],
+  );
+
+  let roundTripped = toCoordinateList(fromCoordinateList(coords));
+
+  let expected = CoordinateList(
+    10[N64],
+    [(0[N64], 3[N64]), (3[N64], 1[N64]), (7[N64], 2[N64]), (8[N64], 2[N64]), (9[N64], 2[N64])],
+  );
+
+  if roundTripped == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: conversion identity");
+  }
+}
+
+fn test_condensation_of_empty(&io: &IO) {
+  let clist: CoordinateList[N32] = CoordinateList(10[N64], []);
+
+  let result = fromCoordinateList(clist);
+
+  let tree = BTree::Node(
+    BTree::Leaf(TreeValue::UserValue(Option::None())),
+    BTree::Node(
+      BTree::Node(
+        BTree::Leaf(TreeValue::UserValue(Option::None())),
+        BTree::Leaf(TreeValue::Dummy()),
+      ),
+      BTree::Leaf(TreeValue::Dummy()),
+    ),
+  );
+  let expected = SparseVector(10[N64], 0[N64], Storage(16[N64], tree));
+
+  if result == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: condensation of empty");
+  }
+}
+
+fn test_map2_power_of_two(&io: &IO) {
+  let tree1 = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(1[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Leaf(TreeValue::UserValue(Some(2[N64]))),
+  );
+  let store1 = Storage(8[N64], tree1);
+  let v1 = SparseVector(8[N64], 6[N64], store1);
+
+  let tree2 = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(2[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+      BTree::Leaf(TreeValue::UserValue(Some(1[N64]))),
+    ),
+  );
+  let store2 = Storage(8[N64], tree2);
+  let v2 = SparseVector(8[N64], 4[N64], store2);
+
+  let f = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+    match (x, y) {
+      (Some(a), Some(b)) { Some(a + b) }
+      _ { Option::None() }
+    }
+  };
+
+  let result = map2(v1, v2, f);
+
+  let expectedTree = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(3[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+      BTree::Leaf(TreeValue::UserValue(Some(3[N64]))),
+    ),
+  );
+  let expectedStore = Storage(8[N64], expectedTree);
+  let expected = Result::Ok(SparseVector(8[N64], 4[N64], expectedStore));
+
+  if result == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: map2 power of two");
+  }
+}
+
+fn test_map2_non_power_of_two(&io: &IO) {
+  let tree1 = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(1[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Node(BTree::Leaf(TreeValue::UserValue(Option::None())), BTree::Leaf(TreeValue::Dummy())),
+  );
+  let store1 = Storage(8[N64], tree1);
+  let v1 = SparseVector(6[N64], 2[N64], store1);
+
+  let tree2 = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(2[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Node(BTree::Leaf(TreeValue::UserValue(Option::None())), BTree::Leaf(TreeValue::Dummy())),
+  );
+  let store2 = Storage(8[N64], tree2);
+  let v2 = SparseVector(6[N64], 2[N64], store2);
+
+  let f = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+    match (x, y) {
+      (Some(a), Some(b)) { Some(a + b) }
+      _ { Option::None() }
+    }
+  };
+
+  let result = map2(v1, v2, f);
+
+  let expectedTree = BTree::Node(
+    BTree::Node(
+      BTree::Leaf(TreeValue::UserValue(Some(3[N64]))),
+      BTree::Leaf(TreeValue::UserValue(Option::None())),
+    ),
+    BTree::Node(BTree::Leaf(TreeValue::UserValue(Option::None())), BTree::Leaf(TreeValue::Dummy())),
+  );
+  let expectedStore = Storage(8[N64], expectedTree);
+  let expected = Result::Ok(SparseVector(6[N64], 2[N64], expectedStore));
+
+  if result == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: map2 non-power of two");
+  }
+}
+
+fn test_simple_addition(&io: &IO) {
+  let dataLength = 10[N64];
+
+  let d1 = [(0[N64], 2[N64]), (9[N64], 1[N64])];
+  let d2 = [(0[N64], 3[N64]), (8[N64], 1[N64])];
+
+  let expectedList = [(0[N64], 5[N64]), (8[N64], 1[N64]), (9[N64], 1[N64])];
+  let expected = CoordinateList(dataLength, expectedList);
+
+  let c1 = CoordinateList(dataLength, d1);
+  let c2 = CoordinateList(dataLength, d2);
+  let v1 = fromCoordinateList(c1);
+  let v2 = fromCoordinateList(c2);
+
+  let addition = fn* (o1: Option[N64], o2: Option[N64]) -> Option[N64] {
+    match (o1, o2) {
+      (Some(x), Some(y)) { Some(x + y) }
+      (Some(x), Option::None()) { Some(x) }
+      (Option::None(), Some(x)) { Some(x) }
+      (Option::None(), Option::None()) { Option::None() }
+    }
+  };
+
+  let result = match map2(v1, v2, addition) {
+    Result::Ok(x) { x }
+    Result::Err(_) {
+      let emptyTree = BTree::Leaf(TreeValue::Dummy());
+      SparseVector(0[N64], 0[N64], Storage(1[N64], emptyTree))
+    }
+  };
+
+  let actual = toCoordinateList(result);
+
+  if actual == expected {
+    io.println("PASS");
+  } else {
+    io.println("FAIL: simple addition");
+  }
+}

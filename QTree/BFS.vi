@@ -1,0 +1,134 @@
+
+use Matrix::SparseMatrix;
+use Vector::SparseVector;
+use Vector::map2;
+use Vector::mask;
+use LinearAlgebra::vxm;
+use Common::TreeValue;
+
+#[impl(Eq,Show)]
+pub enum* BFSError {
+  NewFrontierCalculationProblem(),
+  FrontierCalculationProblem(),
+  VisitedCalculationProblem(),
+}
+
+pub fn bfs_level(graph: SparseMatrix[N64], startVertices: SparseVector[N64]) -> Result[
+  SparseVector[N64], BFSError;
+] {
+  let visited = Vector::map(
+    startVertices,
+    fn* (x: Option[N64]) -> Option[N64] {
+      match x {
+        (Option::Some(_)) { Option::Some(0[N64]) }
+        (Option::None()) { Option::None() }
+      }
+    },
+  );
+
+  let fn inner(level: N64, frontier: SparseVector[N64], visited: SparseVector[N64]) -> Result[
+    SparseVector[N64], BFSError;
+  ] {
+    if frontier.1 > 0[N64] {
+      let op_add = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+        match (x, y) {
+          (Option::Some(a), _) { Option::Some(a) }
+          (_, Option::Some(b)) { Option::Some(b) }
+          _ { Option::None() }
+        }
+      };
+
+      let op_mult = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+        match (x, y) {
+          (Option::Some(a), Option::Some(_)) { Option::Some(a) }
+          _ { Option::None() }
+        }
+      };
+
+      match vxm(op_add, op_mult, frontier, graph) {
+        Result::Err(_e) { Result::Err(BFSError::NewFrontierCalculationProblem()) }
+        Result::Ok(new_frontier) {
+          match mask(
+            new_frontier,
+            visited,
+            fn* (x: Option[N64]) -> Bool {
+              match x {
+                Option::None() { true }
+                _ { false }
+              }
+            },
+          ) {
+            Result::Err(_e) { Result::Err(BFSError::FrontierCalculationProblem()) }
+            Result::Ok(frontier) {
+              let op_add_v = fn* (x: Option[N64], y: Option[N64]) -> Option[N64] {
+                match (x, y) {
+                  (Option::Some(_a), _) { x }
+                  (Option::None(), Option::Some(_b)) { Option::Some(level) }
+                  _ { Option::None() }
+                }
+              };
+              match map2(visited, new_frontier, op_add_v) {
+                Result::Err(_e) { Result::Err(BFSError::VisitedCalculationProblem()) }
+                Result::Ok(visited) { inner(level + 1[N64], frontier, visited) }
+              }
+            }
+          }
+        }
+      }
+    } else {
+      Result::Ok(visited)
+    }
+  }
+
+  inner(1[N64], startVertices, visited)
+}
+
+pub fn run_tests(&io: &IO) {
+  test_simple_level_bfs(&io);
+}
+
+fn leaf_v[T](v: T) -> Matrix::QTree[Option[T]] {
+  Matrix::QTree::Leaf(TreeValue::UserValue(Option::Some(v)))
+}
+
+fn leaf_n[T]() -> Matrix::QTree[Option[T]] {
+  Matrix::QTree::Leaf(TreeValue::UserValue(Option::None()))
+}
+
+fn leaf_vb(v: N64) -> Vector::BTree[Option[N64]] {
+  Vector::BTree::Leaf(TreeValue::UserValue(Option::Some(v)))
+}
+
+fn leaf_nb() -> Vector::BTree[Option[N64]] {
+  Vector::BTree::Leaf(TreeValue::UserValue(Option::None()))
+}
+
+fn test_simple_level_bfs(&io: &IO) {
+  let qtree = Matrix::QTree::Node(
+    Matrix::QTree::Node(leaf_n(), leaf_v(1[N64]), leaf_v(3[N64]), leaf_n()),
+    Matrix::QTree::Node(leaf_v(1[N64]), leaf_n(), leaf_v(2[N64]), leaf_v(3[N64])),
+    leaf_n(),
+    Matrix::QTree::Node(leaf_n(), leaf_v(2[N64]), leaf_v(3[N64]), leaf_n()),
+  );
+  let store = Matrix::Storage(4[N64], qtree);
+  let graph = Matrix::SparseMatrix(4[N64], 4[N64], 9[N64], store);
+
+  let tree = Vector::BTree::Node(Vector::BTree::Node(leaf_vb(1[N64]), leaf_nb()), leaf_nb());
+  let vstore = Vector::Storage(4[N64], tree);
+  let startVertices = Vector::SparseVector(4[N64], 1[N64], vstore);
+
+  let tree = Vector::BTree::Node(
+    Vector::BTree::Node(leaf_vb(0[N64]), leaf_vb(1[N64])),
+    Vector::BTree::Node(leaf_vb(1[N64]), leaf_vb(2[N64])),
+  );
+  let vstore = Vector::Storage(4[N64], tree);
+  let expected = Result::Ok(Vector::SparseVector(4[N64], 4[N64], vstore));
+
+  let actual = bfs_level(graph, startVertices);
+
+  if actual == expected {
+    io.println("PASS: test_simple_level_bfs");
+  } else {
+    io.println("FAIL: test_simple_level_bfs");
+  }
+}

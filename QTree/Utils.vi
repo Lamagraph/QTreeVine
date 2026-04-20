@@ -1,0 +1,100 @@
+
+use Matrix::CoordiInteList;
+use Matrix::fromCoordiInteList;
+use Matrix::SparseMatrix;
+use #root::IO::File;
+
+pub fn read_mtx(&io: &IO, path: String, directed: Bool) -> Result[SparseMatrix[N64], String] {
+  let fn getCooList(lines: List[String]) -> List[(N64, N64, N64)] {
+    let coords: List[(N64, N64, N64)] = [];
+    for line in lines {
+      let trimmed = line.trim();
+      if trimmed.len() == 0[N32] {
+        continue;
+      }
+      let parts = trimmed.split(" ");
+      let row_str = parts.get(0[N32]).assume();
+      let col_str = parts.get(1[N32]).assume();
+      let val_str = if (parts.len() == 3) {parts.get(2[N32]).assume()} else {"1.0"};
+      let row = match N64::parse(row_str) {
+        Some(r) { r - 1[N64] }
+        None() {
+          continue;
+        }
+      };
+      let col = match N64::parse(col_str) {
+        Some(c) { c - 1[N64] }
+        None() {
+          continue;
+        }
+      };
+      let val = match F64::parse(val_str) {
+        Some(v) { v as N64 }
+        None() {          
+          continue;
+        }
+      };
+      coords.push_back((row, col, val));
+      if !directed {
+        coords.push_back((col, row, val));
+      }
+    }
+    coords
+  }
+
+  let file = File::open(&io, path).assume();
+  let contents = file.read_string(&io).assume();
+  file.close(&io);
+
+  let lines = contents.split("\n") as List[String];
+
+  let non_comment = lines.filter(fn* (&line: &String) -> Bool {
+    let trimmed = line.trim();
+    trimmed.len() > 0[N32] and !trimmed.starts_with(&"%")
+  });
+
+  match non_comment.head_tail() {
+    None() { Err("Empty file") }
+    Some(((header_line, data_lines))) {
+      let header_parts = header_line.split(" ");
+      if header_parts.len() != 3[N32] {
+        return Err("Invalid header format");
+      }
+      let nrows = match N64::parse(header_parts.get(0[N32]).assume()) {
+        Some(n) { n }
+        None() {
+          return Err("Invalid header nrows");
+        }
+      };
+      let ncols = match N64::parse(header_parts.get(1[N32]).assume()) {
+        Some(n) { n }
+        None() {
+          return Err("Invalid header ncols");
+        }
+      };
+      io.println("Header: {header_parts.show()}")
+      let nnz = match N64::parse(header_parts.get(2[N32]).assume()) {
+        Some(n) { n }
+        None() {
+          return Err("Invalid header nnz");
+        }
+      };
+
+      let lst = getCooList(data_lines);
+
+      let expected_nnz = if directed {
+        nnz
+      } else {
+        nnz * 2[N64]
+      };
+      let actual_nnz = lst.len() as N64;
+      if actual_nnz != expected_nnz {
+        return Err("Incorrect matrix reading: expected = {expected_nnz}; actual = {actual_nnz}");
+      }
+
+      let coord_list = CoordiInteList(nrows, ncols, lst);
+      let result = fromCoordiInteList(coord_list);
+      Ok(result)
+    }
+  }
+}
