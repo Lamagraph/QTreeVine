@@ -1,0 +1,27 @@
+use #lib::{Vector,Matrix,BFS,Utils}
+
+fn bfs(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
+  let frontier = Vector::fromCoordinateList(Vector::CoordinateList(
+    graph.1 * 1[N64],
+    [(0[N64], 0[N64])],
+  ));
+  let bfs = BFS::bfs_level(graph, frontier);
+  match bfs {
+    (Result::Ok(bfs)) {
+      io.println("BFS ok");
+    }
+    (Result::Err(e)) {
+      io.println("BFS failed: {e.show()}");
+    }
+  }
+}
+
+pub fn main(&io: &IO) {
+  let graph = Utils::read_mtx(&io, "data/494_bus.mtx", false);
+  match graph {
+    (Result::Ok(g)) { bfs(&io, g) }
+    (Result::Err(e)) {
+      io.println("Data loading failed: {e}");
+    }
+  }
+}

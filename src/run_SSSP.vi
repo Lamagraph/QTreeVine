@@ -1,0 +1,23 @@
+use #lib::{Matrix,SSSP,Utils}
+
+fn sssp(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
+  let sssp = SSSP::sssp(graph, 0[N64]);
+  match sssp {
+    (Result::Ok(sssp)) {
+      io.println("SSSP ok");
+    }
+    (Result::Err(e)) {
+      io.println("SSSP failed: {e.show()}");
+    }
+  }
+}
+
+pub fn main(&io: &IO) {
+  let graph = Utils::read_mtx(&io, "data/494_bus.mtx", false);
+  match graph {
+    (Result::Ok(g)) { sssp(&io, g) }
+    (Result::Err(e)) {
+      io.println("Data loading failed: {e}");
+    }
+  }
+}

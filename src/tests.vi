@@ -1,0 +1,15 @@
+use #lib::{Common,Vector,Matrix,LinearAlgebra,BFS,SSSP,TriangleCount}
+
+fn tests(&io: &IO) {
+  Common::CommonInternal::run_tests(&io);
+  Vector::run_tests(&io);
+  Matrix::run_tests(&io);
+  LinearAlgebra::run_tests(&io);
+  BFS::run_tests(&io);
+  SSSP::run_tests(&io);
+  TriangleCount::run_tests(&io);
+}
+
+pub fn main(&io: &IO) {
+  tests(&io);  
+}

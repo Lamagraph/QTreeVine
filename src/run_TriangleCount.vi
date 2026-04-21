@@ -1,0 +1,23 @@
+use #lib::{Matrix,TriangleCount,Utils}
+
+fn tc(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
+  let tc = TriangleCount::triangle_count(graph);
+  match tc {
+    (Result::Ok(tc)) {
+      io.println("TC result: {tc.show()}");
+    }
+    (Result::Err(e)) {
+      io.println("TC failed: {e.show()}");
+    }
+  }
+}
+
+pub fn main(&io: &IO) {
+  let graph = Utils::read_mtx(&io, "data/494_bus.mtx", false);
+  match graph {
+    (Result::Ok(g)) { tc(&io, g) }
+    (Result::Err(e)) {
+      io.println("Data loading failed: {e}");
+    }
+  }
+}
