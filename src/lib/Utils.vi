@@ -34,9 +34,9 @@ pub fn read_mtx(&io: &IO, path: String, directed: Bool) -> Result[SparseMatrix[N
           continue;
         }
       };
-      coords.push_back((row, col, val));
+      coords.push_front((row, col, val));
       if !directed {
-        coords.push_back((col, row, val));
+        coords.push_front((col, row, val));
       }
     }
     coords
