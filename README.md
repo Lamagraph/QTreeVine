@@ -11,9 +11,17 @@ Explore options of ```run``` in [documentation](https://vine.dev/docs/tooling/cl
 4. ```vine run src/run_SSSP.vi --lib src/lib``` to run SSSP example.
 5. ```vine run src/run_TriangleCount.vi --lib src/lib``` to run TriangleCount example.
 
-For semi-automatic run you can use ```run.py```. It allows you to run specific algorithm on specific matrix multiple times with different number of workers.
-1. Set ```PROGRAM_FILE```. This file will be executed.
-2. Configure range for ```workers```.
-3. Configure range for ```run`` (number of runs with specific configuration).
-4. Output will be placed in ```logs\``` directory. This directory will be created automatically if does not exists.
-5. All logs for specific rum will be **added to the end** of the respective log file (if exists). So, do not forget to clean ```logs``` directory if necessary.
+For semi-automatic run you can use ```run.py```:
+
+```bash
+python3 run.py {BFS,SSSP,TriangleCount} [matrix_file]
+               [-r RUNS] [-w WORKERS_START WORKERS_END] [-H HEAP_GB]
+```
+
+- `{BFS,SSSP,TriangleCount}` — algorithm to run (required)
+- `matrix_file` — path to .mtx file (optional; overrides value in source)
+- `-r RUNS` — number of runs per configuration (default: 1)
+- `-w WORKERS_START WORKERS_END` — worker range (end is exclusive) (default: 4 5)
+- `-H HEAP_GB` — heap size in GB, converted to bytes and passed to vine (optional; default: vine's built-in limit)
+
+Logs are placed in `logs_{algo}[_{matrix_stem}]/` with files named `{workers}[_H{heap}G].log`. Run output is **appended** to the respective log file. The source file is temporarily modified to set `matrix_file` if a matrix override is given, and restored after all runs.
