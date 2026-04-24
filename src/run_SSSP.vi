@@ -1,5 +1,7 @@
 use #lib::{Matrix,SSSP,Utils}
 
+const matrix_file:String = "data/494_bus.mtx";
+
 fn sssp(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
   let sssp = SSSP::sssp(graph, 0[N64]);
   match sssp {
@@ -13,7 +15,7 @@ fn sssp(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
 }
 
 pub fn main(&io: &IO) {
-  let graph = Utils::read_mtx(&io, "data/494_bus.mtx", false);
+  let graph = Utils::read_mtx(&io, matrix_file, false);
   match graph {
     (Result::Ok(g)) { sssp(&io, g) }
     (Result::Err(e)) {

@@ -1,5 +1,7 @@
 use #lib::{Matrix,TriangleCount,Utils}
 
+const matrix_file:String = "data/494_bus.mtx";
+
 fn tc(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
   let tc = TriangleCount::triangle_count(graph);
   match tc {
@@ -13,7 +15,7 @@ fn tc(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
 }
 
 pub fn main(&io: &IO) {
-  let graph = Utils::read_mtx(&io, "data/494_bus.mtx", false);
+  let graph = Utils::read_mtx(&io, matrix_file, false);
   match graph {
     (Result::Ok(g)) { tc(&io, g) }
     (Result::Err(e)) {

@@ -1,5 +1,7 @@
 use #lib::{Vector,Matrix,BFS,Utils}
 
+const matrix_file:String = "data/494_bus.mtx";
+
 fn bfs(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
   let frontier = Vector::fromCoordinateList(Vector::CoordinateList(
     graph.1 * 1[N64],
@@ -17,7 +19,7 @@ fn bfs(&io: &IO, graph: Matrix::SparseMatrix[N64]) {
 }
 
 pub fn main(&io: &IO) {
-  let graph = Utils::read_mtx(&io, "data/494_bus.mtx", false);
+  let graph = Utils::read_mtx(&io, matrix_file, false);
   match graph {
     (Result::Ok(g)) { bfs(&io, g) }
     (Result::Err(e)) {
