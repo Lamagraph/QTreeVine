@@ -26,4 +26,4 @@ for workers in range(9):
                 ["vine", "run", f"-w{workers}", PROGRAM_FILE, "--lib", LIB_PATH],
                 stdout=f, stderr=subprocess.STDOUT
             )
-        print(f"k={k} run={run}/3 -> {out_file} [exit {result.returncode}]")
+        print(f"workers={workers} run={run}/3 -> {out_file} [exit {result.returncode}]")
