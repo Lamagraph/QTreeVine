@@ -36,7 +36,7 @@ def parse_log_file(filepath):
     return runs
 
 def main():
-    base = Path("/home/gsv/Projects/QTreeVine")
+    base = Path(__file__).parent
     result = {}
 
     for folder in base.iterdir():
